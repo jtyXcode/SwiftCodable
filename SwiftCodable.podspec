@@ -16,8 +16,6 @@ Pod::Spec.new do |spec|
   }
   spec.swift_versions        = ["5.6", "5.7", "5.8", "5.9", "5.10", "6.0"]
   spec.ios.deployment_target = "12.0"
-  spec.osx.deployment_target = "10.13"
-  spec.watchos.deployment_target = "5.0"
   spec.source_files          = "Sources/SwiftCodable/**/*.swift"
   spec.resource_bundles      = {
     "SwiftCodable_Privacy" => [
