@@ -126,6 +126,359 @@ struct Config: Codable {
 }
 ```
 
+## 根据属性解析不同的 data 模型
+
+当接口通过 `type` 决定 `data` 的结构时，可以使用带关联值的枚举，
+先解析 `type`，再解析对应的模型：
+
+```json
+[
+  {
+    "type": "text",
+    "data": {
+      "content": "Hello"
+    }
+  },
+  {
+    "type": "image",
+    "data": {
+      "url": "https://example.com/photo.png",
+      "width": "1280",
+      "height": 720
+    }
+  }
+]
+```
+
+```swift
+import SwiftCodable
+
+struct TextData: Codable {
+    @SafeString var content: String
+}
+
+struct ImageData: Codable {
+    @SafeString var url: String
+    @SafeInt var width: Int
+    @SafeInt var height: Int
+}
+
+enum Message: Codable {
+    case text(TextData)
+    case image(ImageData)
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case data
+    }
+
+    enum MessageType: String, Codable {
+        case text
+        case image
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+        let type = try container.decode(
+            MessageType.self,
+            forKey: .type
+        )
+
+        switch type {
+        case .text:
+            self = .text(
+                try container.decode(TextData.self, forKey: .data)
+            )
+        case .image:
+            self = .image(
+                try container.decode(ImageData.self, forKey: .data)
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        switch self {
+        case .text(let data):
+            try container.encode(MessageType.text, forKey: .type)
+            try container.encode(data, forKey: .data)
+        case .image(let data):
+            try container.encode(MessageType.image, forKey: .type)
+            try container.encode(data, forKey: .data)
+        }
+    }
+}
+```
+
+使用时对枚举进行匹配，就可以安全取得具体模型：
+
+```swift
+let messages = try JSONDecoder().decode(
+    [Message].self,
+    from: jsonData
+)
+
+for message in messages {
+    switch message {
+    case .text(let data):
+        print(data.content)
+    case .image(let data):
+        print(data.url, data.width, data.height)
+    }
+}
+```
+
+这种方式保留了完整的类型检查，也支持重新编码。服务端新增 `type` 时，
+在 `MessageType` 和 `Message` 中增加对应分支即可。
+
+### 没有 type 等固定区分值
+
+如果数组元素没有 `type`、`kind` 等类型标识，只能根据模型独有的字段或
+字段组合判断类型。例如：
+
+```json
+[
+  { "content": "Hello" },
+  { "imageURL": "a.png", "width": "200" },
+  { "videoURL": "a.mp4", "duration": 120 },
+  { "userID": 1001, "name": "张三" }
+]
+```
+
+先定义具体模型：
+
+```swift
+struct TextData: Codable {
+    @SafeString var content: String
+}
+
+struct ImageData: Codable {
+    @SafeString var imageURL: String
+    @SafeInt var width: Int
+}
+
+struct VideoData: Codable {
+    @SafeString var videoURL: String
+    @SafeInt var duration: Int
+}
+
+struct UserData: Codable {
+    @SafeInt var userID: Int
+    @SafeString var name: String
+}
+```
+
+然后在统一的枚举中先检查特征字段，再解码为具体模型：
+
+```swift
+enum ListItem: Codable {
+    case text(TextData)
+    case image(ImageData)
+    case video(VideoData)
+    case user(UserData)
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case imageURL
+        case width
+        case videoURL
+        case duration
+        case userID
+        case name
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        // 特征越明确的条件越应该放在前面。
+        if container.contains(.videoURL),
+           container.contains(.duration) {
+            self = .video(try VideoData(from: decoder))
+        } else if container.contains(.imageURL),
+                  container.contains(.width) {
+            self = .image(try ImageData(from: decoder))
+        } else if container.contains(.userID) {
+            self = .user(try UserData(from: decoder))
+        } else if container.contains(.content) {
+            self = .text(try TextData(from: decoder))
+        } else {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "无法根据字段判断数组元素类型"
+                )
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .text(let model):
+            try model.encode(to: encoder)
+        case .image(let model):
+            try model.encode(to: encoder)
+        case .video(let model):
+            try model.encode(to: encoder)
+        case .user(let model):
+            try model.encode(to: encoder)
+        }
+    }
+}
+```
+
+整个数组仍然可以直接解码：
+
+```swift
+let items = try JSONDecoder().decode(
+    [ListItem].self,
+    from: jsonData
+)
+```
+
+不建议通过依次执行 `try? container.decode(...)` 来猜测类型。
+`@SafeString`、`@SafeInt` 等包装器会在字段缺失或类型异常时返回默认值，
+因此错误的模型也可能解码成功。应当先用 `container.contains(_:)` 检查
+唯一字段或字段组合，再解码具体模型。
+
+如果不同模型的字段名、字段类型和结构完全相同，JSON 本身就不包含足够的
+类型信息，客户端无法可靠区分。此时需要服务端增加类型字段、增加唯一字段，
+或者由外层上下文和固定数组位置提供类型信息。
+
+## Class 手写解码
+
+当 `class` 需要自己实现 `init(from:)` 时，`container.decode(...)`
+返回的是属性包装器。通过包装器的 `wrappedValue` 可以取得真正的属性值：
+
+```swift
+import Foundation
+import SwiftCodable
+
+// 自定义可选默认值：字段异常时默认 18
+enum DefaultBackupAge: SafeCodableDefaultValue {
+    static let defaultValue: Int? = 18
+}
+
+final class User: Codable {
+
+    // 缺失、null、类型错误时为 nil
+    @SafeOptional<Int>
+    var age: Int?
+
+    // 支持数字转 String
+    @SafeOptional<String>
+    var nickname: String?
+
+    // 非可选 Int，异常时默认 0
+    @SafeInt
+    var score: Int
+
+    // 可选 Int，但异常时默认 18
+    @SafeCodable<DefaultBackupAge>
+    var backupAge: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case age
+        case nickname
+        case score
+        case backupAge
+    }
+
+    init() {}
+
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        // container.decode(...) 返回 SafeOptional<Int>
+        // 再通过 wrappedValue 取得真正的 Int?
+        self.age = try container.decode(
+            SafeOptional<Int>.self,
+            forKey: .age
+        ).wrappedValue
+
+        self.nickname = try container.decode(
+            SafeOptional<String>.self,
+            forKey: .nickname
+        ).wrappedValue
+
+        self.score = try container.decode(
+            SafeInt.self,
+            forKey: .score
+        ).wrappedValue
+
+        self.backupAge = try container.decode(
+            SafeCodable<DefaultBackupAge>.self,
+            forKey: .backupAge
+        ).wrappedValue
+    }
+}
+```
+
+例如解码 `{"nickname":9527,"score":"bad","backupAge":null}` 后，
+`age == nil`、`nickname == "9527"`、`score == 0`、`backupAge == 18`。
+
+### 真正不可变的 let 属性
+
+Swift 不允许把 Property Wrapper 直接声明在 `let` 上，因此
+`@SafeInt let score: Int` 无法编译。需要使用普通 `let` 属性，并在
+手写的 `init(from:)` 中调用 `decodeSafeValue(_:forKey:)`：
+
+```swift
+final class ImmutableUser: Codable {
+    let score: Int
+    let age: Int?
+    let backupAge: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case score
+        case age
+        case backupAge
+    }
+
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(
+            keyedBy: CodingKeys.self
+        )
+
+        score = try container.decodeSafeValue(
+            SafeInt.self,
+            forKey: .score
+        )
+
+        age = try container.decodeSafeValue(
+            SafeOptional<Int>.self,
+            forKey: .age
+        )
+
+        backupAge = try container.decodeSafeValue(
+            SafeCodable<DefaultBackupAge>.self,
+            forKey: .backupAge
+        )
+    }
+}
+```
+
+例如 JSON 为：
+
+```json
+{
+  "score": "99",
+  "age": "21",
+  "backupAge": null
+}
+```
+
+结果为 `score == 99`、`age == 21`、`backupAge == 18`。三个属性都是真正
+不可再次赋值的 `let`。
+
 ## 转换规则
 
 | 目标类型 | 支持的容错来源 |
@@ -150,6 +503,9 @@ swift test
 
 Class、可选默认值和归档的完整说明见
 [ClassCodableGuide.md](Docs/ClassCodableGuide.md)。
+
+Swift 6、严格并发、`Sendable` 和多态数组的完整说明见
+[Swift6UsageGuide.md](Docs/Swift6UsageGuide.md)。
 
 ### UIKit 页面 Demo
 

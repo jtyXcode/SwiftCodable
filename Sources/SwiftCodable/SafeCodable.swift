@@ -56,6 +56,27 @@ public extension KeyedDecodingContainer {
     ) throws -> SafeCodable<Default> {
         try decodeIfPresent(type, forKey: key) ?? SafeCodable()
     }
+
+    /// 解码并直接返回属性包装器中的值。
+    ///
+    /// 适用于手动实现 `init(from:)`，尤其是模型使用真正不可变的
+    /// `let` 属性、无法直接声明 Property Wrapper 的场景：
+    ///
+    /// ```swift
+    /// let score: Int
+    ///
+    /// score = try container.decodeSafeValue(
+    ///     SafeInt.self,
+    ///     forKey: .score
+    /// )
+    /// ```
+    func decodeSafeValue<Default>(
+        _ type: SafeCodable<Default>.Type,
+        forKey key: Key
+    ) throws -> Default.Value
+    where Default: SafeCodableDefaultValue {
+        try decode(type, forKey: key).wrappedValue
+    }
 }
 
 // MARK: - Lossy conversion

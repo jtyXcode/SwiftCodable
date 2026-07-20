@@ -189,6 +189,159 @@ final class SafeCodableTests: XCTestCase {
         XCTAssertEqual(valid.pageSize, 50)
     }
 
+    func testDiscriminatorDecodesDifferentDataModels() throws {
+        let messages = try decode(
+            [TestMessage].self,
+            from: """
+            [
+              {
+                "type": "text",
+                "data": {
+                  "content": "Hello"
+                }
+              },
+              {
+                "type": "image",
+                "data": {
+                  "url": "https://example.com/photo.png",
+                  "width": "1280",
+                  "height": 720
+                }
+              }
+            ]
+            """
+        )
+
+        guard case .text(let text) = messages[0] else {
+            return XCTFail("第一项应解析为 TestTextData")
+        }
+        XCTAssertEqual(text.content, "Hello")
+
+        guard case .image(let image) = messages[1] else {
+            return XCTFail("第二项应解析为 TestImageData")
+        }
+        XCTAssertEqual(image.url, "https://example.com/photo.png")
+        XCTAssertEqual(image.width, 1280)
+        XCTAssertEqual(image.height, 720)
+    }
+
+    func testDiscriminatorModelCanRoundTrip() throws {
+        let original = try decode(
+            TestMessage.self,
+            from: """
+            {
+              "type": "image",
+              "data": {
+                "url": "https://example.com/a.png",
+                "width": 320,
+                "height": 240
+              }
+            }
+            """
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(TestMessage.self, from: data)
+
+        guard case .image(let image) = decoded else {
+            return XCTFail("重新编码后应保持 TestImageData 类型")
+        }
+        XCTAssertEqual(image.url, "https://example.com/a.png")
+        XCTAssertEqual(image.width, 320)
+        XCTAssertEqual(image.height, 240)
+    }
+
+    func testManualClassDecoderReadsWrapperWrappedValues() throws {
+        let missing = try decode(ManualDecodingUser.self, from: "{}")
+        XCTAssertNil(missing.age)
+        XCTAssertNil(missing.nickname)
+        XCTAssertEqual(missing.score, 0)
+        XCTAssertEqual(missing.backupAge, 18)
+
+        let null = try decode(
+            ManualDecodingUser.self,
+            from: """
+            {
+              "age": null,
+              "nickname": null,
+              "score": null,
+              "backupAge": null
+            }
+            """
+        )
+        XCTAssertNil(null.age)
+        XCTAssertNil(null.nickname)
+        XCTAssertEqual(null.score, 0)
+        XCTAssertEqual(null.backupAge, 18)
+
+        let dirty = try decode(
+            ManualDecodingUser.self,
+            from: """
+            {
+              "age": "unknown",
+              "nickname": 9527,
+              "score": "bad",
+              "backupAge": []
+            }
+            """
+        )
+        XCTAssertNil(dirty.age)
+        XCTAssertEqual(dirty.nickname, "9527")
+        XCTAssertEqual(dirty.score, 0)
+        XCTAssertEqual(dirty.backupAge, 18)
+
+        let convertible = try decode(
+            ManualDecodingUser.self,
+            from: """
+            {
+              "age": "21",
+              "nickname": 1001,
+              "score": "99",
+              "backupAge": "30"
+            }
+            """
+        )
+        XCTAssertEqual(convertible.age, 21)
+        XCTAssertEqual(convertible.nickname, "1001")
+        XCTAssertEqual(convertible.score, 99)
+        XCTAssertEqual(convertible.backupAge, 30)
+    }
+
+    func testDecodeSafeValueSupportsImmutableClassProperties() throws {
+        let missing = try decode(ImmutableDecodingUser.self, from: "{}")
+        XCTAssertEqual(missing.score, 0)
+        XCTAssertNil(missing.age)
+        XCTAssertEqual(missing.backupAge, 18)
+
+        let converted = try decode(
+            ImmutableDecodingUser.self,
+            from: """
+            {
+              "score": "99",
+              "age": "21",
+              "backupAge": "30"
+            }
+            """
+        )
+        XCTAssertEqual(converted.score, 99)
+        XCTAssertEqual(converted.age, 21)
+        XCTAssertEqual(converted.backupAge, 30)
+
+        let dirty = try decode(
+            ImmutableDecodingUser.self,
+            from: """
+            {
+              "score": "bad",
+              "age": [],
+              "backupAge": null
+            }
+            """
+        )
+        XCTAssertEqual(dirty.score, 0)
+        XCTAssertNil(dirty.age)
+        XCTAssertEqual(dirty.backupAge, 18)
+    }
+
     func testDeeplyNestedModelsKeepDecodingWhenLeavesAreDirty() throws {
         let value = try decode(
             Root.self,
@@ -416,6 +569,130 @@ private enum PageSize20: SafeCodableDefaultValue {
 
 private struct CustomDefaultValue: Codable {
     @SafeCodable<PageSize20> var pageSize: Int
+}
+
+private struct TestTextData: Codable {
+    @SafeString var content: String
+}
+
+private struct TestImageData: Codable {
+    @SafeString var url: String
+    @SafeInt var width: Int
+    @SafeInt var height: Int
+}
+
+private enum TestMessage: Codable {
+    case text(TestTextData)
+    case image(TestImageData)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case data
+    }
+
+    private enum MessageType: String, Codable {
+        case text
+        case image
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(MessageType.self, forKey: .type)
+
+        switch type {
+        case .text:
+            self = .text(
+                try container.decode(TestTextData.self, forKey: .data)
+            )
+        case .image:
+            self = .image(
+                try container.decode(TestImageData.self, forKey: .data)
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .text(let data):
+            try container.encode(MessageType.text, forKey: .type)
+            try container.encode(data, forKey: .data)
+        case .image(let data):
+            try container.encode(MessageType.image, forKey: .type)
+            try container.encode(data, forKey: .data)
+        }
+    }
+}
+
+private enum DefaultBackupAge: SafeCodableDefaultValue {
+    static let defaultValue: Int? = 18
+}
+
+private final class ManualDecodingUser: Codable {
+    @SafeOptional<Int> var age: Int?
+    @SafeOptional<String> var nickname: String?
+    @SafeInt var score: Int
+    @SafeCodable<DefaultBackupAge> var backupAge: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case age
+        case nickname
+        case score
+        case backupAge
+    }
+
+    init() {}
+
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        age = try container.decode(
+            SafeOptional<Int>.self,
+            forKey: .age
+        ).wrappedValue
+        nickname = try container.decode(
+            SafeOptional<String>.self,
+            forKey: .nickname
+        ).wrappedValue
+        score = try container.decode(
+            SafeInt.self,
+            forKey: .score
+        ).wrappedValue
+        backupAge = try container.decode(
+            SafeCodable<DefaultBackupAge>.self,
+            forKey: .backupAge
+        ).wrappedValue
+    }
+}
+
+private final class ImmutableDecodingUser: Codable {
+    let score: Int
+    let age: Int?
+    let backupAge: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case score
+        case age
+        case backupAge
+    }
+
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        score = try container.decodeSafeValue(
+            SafeInt.self,
+            forKey: .score
+        )
+        age = try container.decodeSafeValue(
+            SafeOptional<Int>.self,
+            forKey: .age
+        )
+        backupAge = try container.decodeSafeValue(
+            SafeCodable<DefaultBackupAge>.self,
+            forKey: .backupAge
+        )
+    }
 }
 
 private struct Root: Codable {
