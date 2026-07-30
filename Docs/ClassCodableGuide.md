@@ -188,7 +188,7 @@ enum CodingKeys: String, CodingKey {
 Demo/SwiftCodableDemoApp/SwiftCodableDemoApp.xcodeproj
 ```
 
-选择 `Class` 场景，可以直接查看：
+在首页选择“Class 与归档”，进入独立解析页后可以直接查看：
 
 - 初始可选默认值
 - 修改后归档解档的结果

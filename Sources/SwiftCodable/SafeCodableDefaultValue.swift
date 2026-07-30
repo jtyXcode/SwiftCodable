@@ -13,6 +13,28 @@ public protocol SafeCodableDefaultValue {
     associatedtype Value: Codable
 
     static var defaultValue: Value { get }
+
+    /// 当前值类型使用的函数式解码规则。
+    ///
+    /// 默认规则保持原有行为：先精确解码，再执行 String、数字和 Bool
+    /// 之间的常用安全转换。已有自定义默认值无需增加任何代码。
+    static var decodingRule: SafeDecodeRule<Value> { get }
+
+    /// 字段解码失败时生成最终回退值。
+    ///
+    /// 默认返回 ``defaultValue``。业务可以根据 missing、null、
+    /// conversionFailed 等原因返回不同结果。
+    static func fallback(for issue: SafeDecodeIssue) -> Value
+}
+
+public extension SafeCodableDefaultValue {
+    static var decodingRule: SafeDecodeRule<Value> {
+        .automatic
+    }
+
+    static func fallback(for issue: SafeDecodeIssue) -> Value {
+        defaultValue
+    }
 }
 
 /// SwiftCodable 内置的常用默认值。

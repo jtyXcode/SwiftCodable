@@ -14,6 +14,46 @@
 - 多层嵌套模型和数组中的嵌套模型
 - Swift Package Manager 与 CocoaPods
 - Apple Privacy Manifest（不跟踪、不收集数据、不使用 Required Reason API）
+- 函数式解码规则：`exact`、`or`、`map`、`validate`
+- 精确诊断：missing、null、类型错误、转换失败、溢出、业务校验失败
+- Debug 默认打印、Release 默认静默，并支持统一监听线上问题
+
+完整设计和诊断接入方式见
+[函数式解码与统一诊断方案](Docs/FunctionalDiagnosticsDesign.md)。
+
+## 统一错误监听
+
+Debug 构建默认打印容错失败，Release 构建默认不打印。可以随时手动调整：
+
+```swift
+SafeCodableDiagnostics.isAutomaticLoggingEnabled = false
+```
+
+监听器与打印开关相互独立，因此 Release 可以静默收集并统一上报：
+
+```swift
+SafeCodableDiagnostics.setListener { issue in
+    print(
+        issue.reasonCode,
+        issue.ownerType ?? "UnknownModel",
+        issue.pathDescription,
+        issue.expectedType,
+        issue.actualValue.typeName
+    )
+}
+```
+
+单个属性的结果可以通过 `$属性名` 查看：
+
+```swift
+let user = try JSONDecoder().decode(User.self, from: data)
+
+if case .fallback(let issue) = user.$age {
+    print(issue.message)
+}
+```
+
+线上上报建议只发送类型、路径和错误码，避免上传接口字段原值。
 
 ## Swift Package Manager
 
@@ -515,10 +555,13 @@ Swift 6、严格并发、`Sendable` 和多态数组的完整说明见
 Demo/SwiftCodableDemoApp/SwiftCodableDemoApp.xcodeproj
 ```
 
-选择 `SwiftCodableDemoApp` Scheme 和任意 iOS 16+ 模拟器运行。Demo 使用纯 UIKit 和 Auto Layout，不依赖 Storyboard，包含：
+选择 `SwiftCodableDemoApp` Scheme 和任意 iOS 16+ 模拟器运行。Demo 使用
+`SceneDelegate`、纯 UIKit 和 Auto Layout，不依赖 Storyboard：
 
-- 设备真实消息、脏数据、缺失字段、多层嵌套、Class 归档五种场景
-- 可编辑 JSON 输入
-- 一键恢复示例与重新解码
-- 每个字段的解码结果和错误信息
-- 本地 Swift Package 集成
+- 首页使用分组 `UITableView` 展示 11 个可运行示例
+- 点击示例进入独立解析页
+- 覆盖常用容错、missing/null、Optional、集合、嵌套、多态模型
+- 覆盖函数式规则、六类诊断、不可变 let、Class 归档和真实设备消息
+- 详情页支持编辑 JSON、一键恢复并重新解析
+- 同时展示字段值、`$属性` 状态和统一监听捕获的结构化问题
+- Debug 自动打印开关与本地 Swift Package 集成

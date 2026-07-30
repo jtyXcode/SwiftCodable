@@ -1,57 +1,150 @@
 import Foundation
 
+enum DemoSection: String, CaseIterable {
+    case basics = "基础能力"
+    case structures = "集合与模型"
+    case functional = "函数式与诊断"
+    case production = "实际工程"
+}
+
 enum DemoScenario: String, CaseIterable, Identifiable {
-    case device
     case dirty
     case missing
+    case optional
+    case collections
     case nested
+    case polymorphic
+    case functionalRules
+    case diagnostics
+    case immutable
     case classArchive
+    case device
 
     var id: String { rawValue }
 
+    var section: DemoSection {
+        switch self {
+        case .dirty, .missing, .optional:
+            return .basics
+        case .collections, .nested, .polymorphic:
+            return .structures
+        case .functionalRules, .diagnostics:
+            return .functional
+        case .immutable, .classArchive, .device:
+            return .production
+        }
+    }
+
     var title: String {
         switch self {
-        case .device:
-            return "设备"
         case .dirty:
-            return "脏数据"
+            return "常用类型容错"
         case .missing:
-            return "缺字段"
+            return "缺失与 null"
+        case .optional:
+            return "可选值"
+        case .collections:
+            return "数组与字典"
         case .nested:
-            return "多嵌套"
+            return "多层嵌套"
+        case .polymorphic:
+            return "多态 data 模型"
+        case .functionalRules:
+            return "函数式规则"
+        case .diagnostics:
+            return "六类错误诊断"
+        case .immutable:
+            return "不可变 let 属性"
         case .classArchive:
-            return "Class"
+            return "Class 与归档"
+        case .device:
+            return "真实设备数据"
         }
     }
 
     var detail: String {
         switch self {
-        case .device:
-            return "真实设备 property/disconnect 消息，包含 Int64、null 和 snake_case。"
         case .dirty:
-            return "String、数字、Bool 类型互转，以及无法转换时的默认值。"
+            return "String、数字、Bool 类型互转，以及失败后的默认值。"
         case .missing:
-            return "字段缺失和 null 时，验证内置默认值与自定义 pageSize 默认值。"
+            return "区分 missing 和 null，并展示内置与业务默认值。"
+        case .optional:
+            return "SafeOptional 的精确解码、容错转换和 nil 回退。"
+        case .collections:
+            return "数组、字典缺失或整体类型错误时使用空集合。"
         case .nested:
-            return "Company → Team → Member 多层模型和数组中的脏字段。"
+            return "Company → Team → Member，多层数组中的字段路径诊断。"
+        case .polymorphic:
+            return "根据 type 将 data 解码为不同的强类型关联值。"
+        case .functionalRules:
+            return "使用 automatic、map、or、convert、validate 组合业务规则。"
+        case .diagnostics:
+            return "一次触发 missing、null、类型错误、转换失败、溢出和校验失败。"
+        case .immutable:
+            return "通过 decodeSafeValue 为真正的 let 属性提供相同容错。"
         case .classArchive:
-            return "可选默认值修改、归档解档、显式 nil 回退和 Class 默认对象隔离。"
+            return "可选默认值、修改归档、显式 nil 回退和默认对象隔离。"
+        case .device:
+            return "真实 property/disconnect 消息，包含 Int64、null 和 snake_case。"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .dirty:
+            return "arrow.triangle.2.circlepath"
+        case .missing:
+            return "questionmark.diamond"
+        case .optional:
+            return "questionmark.circle"
+        case .collections:
+            return "square.stack.3d.up"
+        case .nested:
+            return "point.3.connected.trianglepath.dotted"
+        case .polymorphic:
+            return "arrow.triangle.branch"
+        case .functionalRules:
+            return "function"
+        case .diagnostics:
+            return "exclamationmark.bubble"
+        case .immutable:
+            return "lock"
+        case .classArchive:
+            return "archivebox"
+        case .device:
+            return "sensor"
         }
     }
 
     var json: String {
         switch self {
-        case .device:
-            return Self.deviceJSON
         case .dirty:
             return Self.dirtyJSON
         case .missing:
             return Self.missingJSON
+        case .optional:
+            return Self.optionalJSON
+        case .collections:
+            return Self.collectionsJSON
         case .nested:
             return Self.nestedJSON
+        case .polymorphic:
+            return Self.polymorphicJSON
+        case .functionalRules:
+            return Self.functionalRulesJSON
+        case .diagnostics:
+            return Self.diagnosticsJSON
+        case .immutable:
+            return Self.immutableJSON
         case .classArchive:
             return Self.classArchiveJSON
+        case .device:
+            return Self.deviceJSON
         }
+    }
+
+    static func scenarios(in section: DemoSection) -> [DemoScenario] {
+        allCases.filter { $0.section == section }
     }
 
     private static let dirtyJSON = """
@@ -72,6 +165,22 @@ enum DemoScenario: String, CaseIterable, Identifiable {
     }
     """
 
+    private static let optionalJSON = """
+    {
+      "age": "21",
+      "nickname": 9527,
+      "score": "unknown"
+    }
+    """
+
+    private static let collectionsJSON = """
+    {
+      "items": "not-an-array",
+      "lookup": [],
+      "validItems": [1, 2, 3]
+    }
+    """
+
     private static let nestedJSON = """
     {
       "company": {
@@ -86,6 +195,50 @@ enum DemoScenario: String, CaseIterable, Identifiable {
           }
         ]
       }
+    }
+    """
+
+    private static let polymorphicJSON = """
+    [
+      {
+        "type": "text",
+        "data": {
+          "content": "Hello SwiftCodable"
+        }
+      },
+      {
+        "type": "image",
+        "data": {
+          "url": "https://example.com/photo.png",
+          "width": "1280",
+          "height": 720
+        }
+      }
+    ]
+    """
+
+    private static let functionalRulesJSON = """
+    {
+      "age": "18",
+      "port": "70000"
+    }
+    """
+
+    private static let diagnosticsJSON = """
+    {
+      "nullValue": null,
+      "typeMismatch": {},
+      "conversionFailed": "abc",
+      "overflow": "128",
+      "validationFailed": 200
+    }
+    """
+
+    private static let immutableJSON = """
+    {
+      "score": "99",
+      "age": "21",
+      "backupAge": null
     }
     """
 

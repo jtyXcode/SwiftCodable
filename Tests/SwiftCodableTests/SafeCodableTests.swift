@@ -3,6 +3,17 @@ import XCTest
 @testable import SwiftCodable
 
 final class SafeCodableTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        SafeCodableDiagnostics.setListener(nil)
+        SafeCodableDiagnostics.isAutomaticLoggingEnabled = false
+    }
+
+    override func tearDown() {
+        SafeCodableDiagnostics.reset()
+        super.tearDown()
+    }
+
     func testMissingKeysUseCommonDefaults() throws {
         let value = try decode(CommonValues.self, from: "{}")
 
@@ -69,6 +80,51 @@ final class SafeCodableTests: XCTestCase {
         XCTAssertEqual(value.decimal, Decimal(string: "19.99"))
         XCTAssertTrue(value.bool)
         XCTAssertFalse(value.trueBool)
+    }
+
+    func testDecimalRequiresACompleteNumericLiteral() throws {
+        let validCases: [(String, String)] = [
+            ("42", "42"),
+            ("-19.99", "-19.99"),
+            (".5", "0.5"),
+            ("1.", "1"),
+            ("1e3", "1000"),
+            ("-1.25E-2", "-0.0125")
+        ]
+
+        for (literal, expected) in validCases {
+            let value = try decode(
+                DecimalValue.self,
+                from: "{\"value\":\"\(literal)\"}"
+            )
+            XCTAssertEqual(
+                value.value,
+                Decimal(
+                    string: expected,
+                    locale: Locale(identifier: "en_US_POSIX")
+                ),
+                "应接受完整 Decimal 字面量 \(literal)"
+            )
+            guard case .converted = value.$value else {
+                return XCTFail("\(literal) 应记录为 converted")
+            }
+        }
+
+        let invalidCases = [
+            "123abc", "1.2.3", "--1", "+inf", "-inf", "", "+", "-", "1e"
+        ]
+        for literal in invalidCases {
+            let value = try decode(
+                DecimalValue.self,
+                from: "{\"value\":\"\(literal)\"}"
+            )
+            XCTAssertEqual(value.value, 0, "应拒绝 \(literal)")
+            XCTAssertEqual(
+                value.$value.issue?.reason,
+                .conversionFailed,
+                "\(literal) 应进入 conversionFailed/fallback"
+            )
+        }
     }
 
     func testAllIntegerConvenienceWrappers() throws {
@@ -512,6 +568,162 @@ final class SafeCodableTests: XCTestCase {
         XCTAssertEqual(roundTrip.data?.bindUserId, properties.bindUserId)
         XCTAssertEqual(roundTrip.data?.rtsaResolution, "1920x1080")
     }
+
+    func testFunctionalRuleSupportsOptionalValidatedValue() throws {
+        let valid = try decode(
+            FunctionalOptionalAge.self,
+            from: #"{"age":"18"}"#
+        )
+        XCTAssertEqual(valid.age, 18)
+        guard case .converted(let trace) = valid.$age else {
+            return XCTFail("字符串年龄应记录为 converted")
+        }
+        XCTAssertEqual(
+            trace.source,
+            .converted(from: "String", to: "Int")
+        )
+
+        let invalid = try decode(
+            FunctionalOptionalAge.self,
+            from: #"{"age":200}"#
+        )
+        XCTAssertNil(invalid.age)
+        XCTAssertEqual(
+            invalid.$age.issue?.reason,
+            .validationFailed(message: "年龄必须在 0～150 之间")
+        )
+    }
+
+    func testDiagnosticsPreciselyClassifiesAllFailureReasons() throws {
+        let recorder = IssueRecorder()
+        SafeCodableDiagnostics.setListener { issue in
+            recorder.append(issue)
+        }
+
+        let value = try decode(
+            DiagnosticValues.self,
+            from: """
+            {
+              "nullValue": null,
+              "mismatch": {},
+              "conversion": "abc",
+              "overflow": "128",
+              "validation": 200
+            }
+            """
+        )
+
+        XCTAssertEqual(value.missing, 0)
+        XCTAssertEqual(value.nullValue, 0)
+        XCTAssertEqual(value.mismatch, 0)
+        XCTAssertEqual(value.conversion, 0)
+        XCTAssertEqual(value.overflow, 0)
+        XCTAssertEqual(value.validation, 0)
+
+        XCTAssertEqual(value.$missing.issue?.reason, .missing)
+        XCTAssertEqual(value.$nullValue.issue?.reason, .null)
+        XCTAssertEqual(value.$mismatch.issue?.reason, .typeMismatch)
+        XCTAssertEqual(value.$conversion.issue?.reason, .conversionFailed)
+        XCTAssertEqual(value.$overflow.issue?.reason, .overflow)
+        XCTAssertEqual(
+            value.$validation.issue?.reason,
+            .validationFailed(message: "年龄必须在 0～150 之间")
+        )
+
+        let issues = recorder.snapshot()
+        XCTAssertEqual(issues.count, 6)
+        XCTAssertEqual(
+            Set(issues.map(\.reasonCode)),
+            Set([
+                "missing",
+                "null",
+                "typeMismatch",
+                "conversionFailed",
+                "overflow",
+                "validationFailed"
+            ])
+        )
+
+        let conversion = try XCTUnwrap(
+            issues.first { $0.reasonCode == "conversionFailed" }
+        )
+        XCTAssertEqual(conversion.ownerType?.split(separator: ".").last, "DiagnosticValues")
+        XCTAssertEqual(conversion.field, "conversion")
+        XCTAssertEqual(conversion.pathDescription, "$.conversion")
+        XCTAssertEqual(conversion.expectedType, "Int")
+        XCTAssertEqual(conversion.actualValue, .string("abc"))
+        XCTAssertTrue(conversion.message.contains("DiagnosticValues.conversion"))
+    }
+
+    func testListenerStillReceivesIssuesWhenAutomaticLoggingIsOff() throws {
+        let recorder = IssueRecorder()
+        SafeCodableDiagnostics.isAutomaticLoggingEnabled = false
+        SafeCodableDiagnostics.setListener { issue in
+            recorder.append(issue)
+        }
+
+        _ = try decode(
+            DiagnosticValues.self,
+            from: """
+            {
+              "nullValue": 1,
+              "mismatch": 1,
+              "conversion": 1,
+              "overflow": 1,
+              "validation": 1
+            }
+            """
+        )
+
+        let issue = try XCTUnwrap(recorder.snapshot().first)
+        XCTAssertEqual(issue.reason, .missing)
+        XCTAssertEqual(issue.pathDescription, "$.missing")
+    }
+
+    func testDiagnosticMessagesNeutralizeControlCharacters() throws {
+        let recorder = IssueRecorder()
+        SafeCodableDiagnostics.setListener { issue in
+            recorder.append(issue)
+        }
+
+        let value = try decode(
+            DiagnosticStringValue.self,
+            from: #"{"value":"prefix\t\b\u001b\u0000\u007f\u2028\u2029\n\r"}"#
+        )
+        let issue = try XCTUnwrap(value.$value.issue)
+        let listenerIssue = try XCTUnwrap(recorder.snapshot().first)
+
+        XCTAssertEqual(listenerIssue.description, issue.description)
+        XCTAssertTrue(issue.message.contains(#"\t"#))
+        XCTAssertTrue(issue.message.contains(#"\u{8}"#))
+        XCTAssertTrue(issue.message.contains(#"\u{1B}"#))
+        XCTAssertTrue(issue.message.contains(#"\u{0}"#))
+        XCTAssertTrue(issue.message.contains(#"\u{7F}"#))
+        XCTAssertTrue(issue.message.contains(#"\u{2028}"#))
+        XCTAssertTrue(issue.message.contains(#"\u{2029}"#))
+        XCTAssertTrue(issue.message.contains(#"\n\r"#))
+        XCTAssertFalse(
+            issue.description.unicodeScalars.contains {
+                $0.value <= 0x1F
+                    || (0x7F...0x9F).contains($0.value)
+                    || $0.value == 0x2028
+                    || $0.value == 0x2029
+            }
+        )
+    }
+
+    func testDiagnosticsDefaultLoggingMatchesBuildConfiguration() {
+        SafeCodableDiagnostics.reset()
+
+        #if DEBUG
+        XCTAssertTrue(SafeCodableDiagnostics.isAutomaticLoggingEnabled)
+        #else
+        XCTAssertFalse(SafeCodableDiagnostics.isAutomaticLoggingEnabled)
+        #endif
+
+        SafeCodableDiagnostics.isAutomaticLoggingEnabled = false
+        XCTAssertFalse(SafeCodableDiagnostics.isAutomaticLoggingEnabled)
+    }
 }
 
 // MARK: - Fixtures
@@ -534,6 +746,14 @@ private struct BoolValue: Codable {
 
 private struct StringValue: Codable {
     @SafeString var value: String
+}
+
+private struct DecimalValue: Codable {
+    @SafeDecimal var value: Decimal
+}
+
+private struct DiagnosticStringValue: Codable {
+    @SafeInt var value: Int
 }
 
 private struct IntegerValues: Codable {
@@ -815,6 +1035,67 @@ private struct DeviceProperties: Codable {
     @SafeInt var volume: Int
     @SafeString var wifiSsid: String
     @SafeInt var workingState: Int
+}
+
+private enum OptionalValidatedAge: SafeCodableDefaultValue {
+    static let defaultValue: Int? = nil
+
+    static var decodingRule: SafeDecodeRule<Int?> {
+        SafeDecodeRule<Int>.automatic
+            .validate("年龄必须在 0～150 之间") {
+                (0...150).contains($0)
+            }
+            .map(Optional.some)
+    }
+}
+
+private struct FunctionalOptionalAge: Codable {
+    @SafeCodable<OptionalValidatedAge> var age: Int?
+}
+
+private enum ValidatedAge: SafeCodableDefaultValue {
+    static let defaultValue = 0
+
+    static var decodingRule: SafeDecodeRule<Int> {
+        .automatic.validate("年龄必须在 0～150 之间") {
+            (0...150).contains($0)
+        }
+    }
+}
+
+private struct DiagnosticValues: Codable {
+    @SafeInt var missing: Int
+    @SafeInt var nullValue: Int
+    @SafeInt var mismatch: Int
+    @SafeInt var conversion: Int
+    @SafeInt8 var overflow: Int8
+    @SafeCodable<ValidatedAge> var validation: Int
+
+    enum CodingKeys: String, CodingKey {
+        case missing
+        case nullValue
+        case mismatch
+        case conversion
+        case overflow
+        case validation
+    }
+}
+
+private final class IssueRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var issues: [SafeDecodeIssue] = []
+
+    func append(_ issue: SafeDecodeIssue) {
+        lock.lock()
+        issues.append(issue)
+        lock.unlock()
+    }
+
+    func snapshot() -> [SafeDecodeIssue] {
+        lock.lock()
+        defer { lock.unlock() }
+        return issues
+    }
 }
 
 private func decode<T: Decodable>(

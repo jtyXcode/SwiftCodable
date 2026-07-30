@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name                  = "SwiftCodable"
-  spec.version               = "0.1.1"
+  spec.version               = "0.1.2"
   spec.summary               = "Safe Codable property wrappers with defaults and lossy conversion."
   spec.description           = <<-DESC
     SwiftCodable provides property wrappers for missing, null and mismatched JSON
